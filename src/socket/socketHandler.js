@@ -1,33 +1,29 @@
-const roomManager = require("../rooms/roomManager")
+const matchmaking = require("./matchmaking");
 
 module.exports = (io) => {
-
   io.on("connection", (socket) => {
-    console.log("User connected:", socket.id)
+    console.log("User connected:", socket.id);
+
+     matchmaking(io, socket);
 
     socket.on("joinRoom", ({ roomId, playerName }) => {
+      const room = roomManager.joinRoom(roomId, socket.id, playerName);
 
-      const room = roomManager.joinRoom(roomId, socket.id, playerName)
+      socket.join(roomId);
 
-      socket.join(roomId)
-
-      io.to(roomId).emit("gameState", room)
-    })
+      io.to(roomId).emit("gameState", room);
+    });
 
     socket.on("playCard", ({ roomId, card }) => {
-
-      const updatedRoom = roomManager.playCard(roomId, socket.id, card)
+      const updatedRoom = roomManager.playCard(roomId, socket.id, card);
 
       if (updatedRoom) {
-        io.to(roomId).emit("gameState", updatedRoom)
+        io.to(roomId).emit("gameState", updatedRoom);
       }
-    })
+    });
 
     socket.on("disconnect", () => {
-      console.log("Disconnected:", socket.id)
-      roomManager.handleDisconnect(socket.id)
-    })
-
-  })
-
-}
+      console.log("User disconnected:", socket.id);
+    });
+  });
+};

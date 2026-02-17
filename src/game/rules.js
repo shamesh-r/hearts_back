@@ -1,4 +1,5 @@
 exports.isValidMove = (room, player, card) => {
+  // Placeholder validation. Add Hearts constraints here.
   // TODO:
   // - turn validation
   // - follow suit
@@ -7,15 +8,21 @@ exports.isValidMove = (room, player, card) => {
 }
 
 exports.moveToNextPlayer = (room) => {
+  // Move turn pointer circularly through active room players.
   const currentIndex =
-    room.players.findIndex(p => p.id === room.currentTurn)
+    room.players.findIndex(p => (p.socketId || p.id) === room.currentTurn)
 
-  const nextIndex = (currentIndex + 1) % 4
-  room.currentTurn = room.players[nextIndex].id
+  if (currentIndex < 0 || room.players.length === 0) {
+    room.currentTurn = null
+    return
+  }
+
+  const nextIndex = (currentIndex + 1) % room.players.length
+  room.currentTurn = room.players[nextIndex].socketId || room.players[nextIndex].id
 }
 
 exports.resolveTrick = (room) => {
-  // Determine winner
+  // TODO: replace with real trick winner resolution by lead suit/high card.
   const winner = room.currentTrick[0].playerId
 
   room.currentTurn = winner

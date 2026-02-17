@@ -35,6 +35,7 @@ function buildGameStateForPlayer(room, socketId) {
     game: {
       roomId: room.roomId,
       phase: room.phase,
+      passDirection: room.passDirection || "none",
       currentTurn: room.currentTurn,
       players: serializePlayers(room),
       currentTrick: room.currentTrick,
@@ -96,6 +97,10 @@ function createRoom(io, queuedPlayers) {
   });
 
   gameEngine.startGame(room);
+  room.selectedCards = {};
+  room.passDirection = "left";
+  room.phase = room.passDirection === "none" ? "playing" : "passing";
+  syncHandsMap(room);
   rooms.set(roomId, room);
 
   room.players.forEach((player) => {
@@ -149,6 +154,24 @@ function normalizeRank(value) {
   return null;
 }
 
+function getCardId(card) {
+  if (!card) {
+    return null;
+  }
+
+  if (card.id) {
+    return card.id;
+  }
+
+  const suit = normalizeSuit(card.suit || card.symbol);
+  const rank = normalizeRank(card.rank || card.value);
+  if (!suit || rank === null) {
+    return null;
+  }
+
+  return `${suit}${rank}`;
+}
+
 // Match an incoming played card against the server hand safely.
 function findMatchingCard(hand, card) {
   if (!Array.isArray(hand) || !card) {
@@ -175,11 +198,137 @@ function findMatchingCard(hand, card) {
   }) || null;
 }
 
+function syncHandsMap(room) {
+  room.hands = {};
+  room.players.forEach((player) => {
+    room.hands[player.socketId] = player.hand;
+  });
+}
+
+function getPassTargetIndex(index, direction, totalPlayers) {
+  if (direction === "left") {
+    return (index + 1) % totalPlayers;
+  }
+  if (direction === "right") {
+    return (index - 1 + totalPlayers) % totalPlayers;
+  }
+  if (direction === "across") {
+    return (index + 2) % totalPlayers;
+  }
+  return index;
+}
+
+function allPlayersSubmittedPass(room) {
+  if (room.players.length !== 4) {
+    return false;
+  }
+
+  return room.players.every((player) => {
+    const cards = room.selectedCards?.[player.socketId];
+    return Array.isArray(cards) && cards.length === 3;
+  });
+}
+
+function emitPassingComplete(io, room) {
+  room.players.forEach((player) => {
+    const socket = io.sockets.sockets.get(player.socketId);
+    if (!socket) {
+      return;
+    }
+
+    socket.emit("passingComplete", {
+      hand: player.hand,
+      phase: room.phase,
+    });
+  });
+}
+
+function completePassing(io, room) {
+  const direction = room.passDirection || "none";
+  const totalPlayers = room.players.length;
+  const outgoingBySocketId = {};
+
+  room.players.forEach((player) => {
+    outgoingBySocketId[player.socketId] = room.selectedCards[player.socketId] || [];
+  });
+
+  room.players.forEach((player) => {
+    const outgoing = outgoingBySocketId[player.socketId] || [];
+    const outgoingIds = new Set(outgoing.map((card) => getCardId(card)).filter(Boolean));
+    player.hand = player.hand.filter((card) => !outgoingIds.has(getCardId(card)));
+  });
+
+  if (direction !== "none") {
+    room.players.forEach((player, index) => {
+      const targetIndex = getPassTargetIndex(index, direction, totalPlayers);
+      const targetPlayer = room.players[targetIndex];
+      const outgoing = outgoingBySocketId[player.socketId] || [];
+      targetPlayer.hand.push(...outgoing);
+    });
+  }
+
+  room.selectedCards = {};
+  room.phase = "playing";
+  syncHandsMap(room);
+  emitPassingComplete(io, room);
+  emitGameStateToRoom(io, room);
+}
+
+function passCards(io, socketId, cards) {
+  const room = getRoomBySocketId(socketId);
+  if (!room) {
+    return null;
+  }
+
+  if (room.phase !== "passing") {
+    return room;
+  }
+
+  const player = room.players.find((p) => p.socketId === socketId);
+  if (!player) {
+    return room;
+  }
+
+  const incomingCards = Array.isArray(cards) ? cards : [];
+  if (incomingCards.length !== 3) {
+    emitGameStateToPlayer(io, room, socketId);
+    return room;
+  }
+
+  const selected = [];
+  const usedIds = new Set();
+  for (const incomingCard of incomingCards) {
+    const resolved = findMatchingCard(player.hand, incomingCard);
+    const resolvedId = getCardId(resolved);
+    if (!resolved || !resolvedId || usedIds.has(resolvedId)) {
+      emitGameStateToPlayer(io, room, socketId);
+      return room;
+    }
+    usedIds.add(resolvedId);
+    selected.push(resolved);
+  }
+
+  room.selectedCards[socketId] = selected;
+
+  if (allPlayersSubmittedPass(room)) {
+    completePassing(io, room);
+  } else {
+    emitGameStateToPlayer(io, room, socketId);
+  }
+
+  return room;
+}
+
 // Process a play request and then emit fresh state.
 function playCard(io, socketId, card) {
   const room = getRoomBySocketId(socketId);
   if (!room) {
     return null;
+  }
+
+  if (room.phase !== "playing") {
+    emitGameStateToPlayer(io, room, socketId);
+    return room;
   }
 
   const player = room.players.find((p) => p.socketId === socketId);
@@ -213,6 +362,12 @@ function removePlayer(io, socketId) {
   }
 
   room.players = room.players.filter((player) => player.socketId !== socketId);
+  if (room.selectedCards) {
+    delete room.selectedCards[socketId];
+  }
+  if (room.hands) {
+    delete room.hands[socketId];
+  }
 
   if (!room.players.length) {
     rooms.delete(roomId);
@@ -223,12 +378,14 @@ function removePlayer(io, socketId) {
     room.currentTurn = room.players[0]?.socketId || null;
   }
 
+  syncHandsMap(room);
   emitGameStateToRoom(io, room);
   return room;
 }
 
 module.exports = {
   createRoom,
+  passCards,
   playCard,
   removePlayer,
   getRoomBySocketId,

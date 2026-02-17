@@ -14,6 +14,10 @@ module.exports = (io) => {
       roomManager.playCard(io, socket.id, card);
     });
 
+    socket.on("passCards", ({ cards } = {}) => {
+      roomManager.passCards(io, socket.id, cards);
+    });
+
     socket.on("disconnect", () => {
       console.log("User disconnected:", socket.id);
       // Remove from both waiting queue and active room state.

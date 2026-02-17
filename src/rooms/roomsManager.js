@@ -3,6 +3,7 @@ const gameEngine = require("../game/gameEngine")
 
 // Legacy room store (object map); current socket flow uses socket/roomManager.js.
 const rooms = {}
+console.log(rooms)
 
 exports.joinRoom = (roomId, socketId, playerName) => {
 
